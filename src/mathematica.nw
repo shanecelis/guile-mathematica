@@ -1,0 +1,261 @@
+\section{Mathematica}
+
+We want to be able to call Mathematica from guile.  We could do this
+over the shell, but that would require an Expect-like facility to make
+it work synchronously.  That's possible, but it actually easier to use
+Mathematica's C API.
+
+This Guile library is based off Mathematica's C example program called
+[[factor3]].
+
+<<file:mathematica.c>>=
+/* To run this program use the command-line below:
+ *	Unix:           factor3 -linkname "math -mathlink"
+ *	Mac or Windows: factor3 -linkmode launch
+ */
+#include <libguile.h>
+#ifndef SCM_MAGIC_SNARFER 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "mathlink.h"
+#endif
+
+#define C_STRING_TO_SYMBOL(str) scm_string_to_symbol(scm_from_locale_string(str))
+
+static void init_and_openlink P(( int argc, char* argv[]));
+static void error P(( MLINK lp));
+static SCM   read_and_print_expression P(( MLINK lp, int *err));
+static SCM   read_and_print_atom P(( MLINK lp, int tag, int *err));
+static SCM   read_integer P(( MLINK lp, int *err));
+static SCM   read_real P(( MLINK lp, int *err));
+static SCM   read_and_print_function P(( MLINK lp, int *err));
+
+MLENV ep = (MLENV)0;
+MLINK lp = (MLINK)0;
+
+static SCM read_and_print_expression( MLINK lp, int *err)
+{
+	int tag;
+	switch (tag = MLGetNext(lp)) {
+	case MLTKINT:
+        return read_integer(lp, err);
+	case MLTKREAL:
+        return read_real(lp, err);
+	case MLTKSYM:
+	case MLTKSTR:
+		return read_and_print_atom(lp, tag, err);
+	case MLTKFUNC:
+		return (read_and_print_function(lp, err));
+	case MLTKERROR:
+	default:
+		*err = 0;
+	}
+    return SCM_UNSPECIFIED;
+}
+
+static SCM read_integer( MLINK lp, int *err)
+{
+  int i;
+  *err = MLGetInteger32(lp, &i);
+  if (*err)
+    return SCM_UNSPECIFIED;
+  else
+    return scm_from_int(i);
+}
+
+static SCM read_real( MLINK lp, int *err)
+{
+  double d;
+  *err = MLGetReal64(lp, &d);
+  if (*err)
+    return SCM_UNSPECIFIED;
+  else
+    return scm_from_double(d);
+}
+
+static SCM read_and_print_atom( MLINK lp, int tag, int *err)
+{
+#if MLINTERFACE >= 3
+	const char *s;
+#else
+	kcharp_ct s;
+#endif /* MLINTERFACE >= 3 */
+    SCM result = SCM_UNSPECIFIED;
+	//if( tag == MLTKSTR) putchar( '"');
+	if( MLGetString(lp, &s)){
+        result = scm_from_locale_string(s);
+		MLDisownString(lp, s);
+	}
+	//if( tag == MLTKSTR) putchar( '"');
+	*err = MLError(lp);
+    if (*err)
+      return SCM_UNSPECIFIED;
+    if (tag == MLTKSYM)
+      result = scm_string_to_symbol(result);
+      
+    return result;
+}
+
+
+static SCM read_and_print_function( MLINK lp, int *err)
+{
+	int  len, i;
+
+	if( ! MLGetArgCount(lp, &len)) { 
+      *err = 3;
+      return SCM_UNSPECIFIED;
+    }
+
+    SCM function = read_and_print_expression(lp, err);
+    SCM result = SCM_EOL;
+	if (*err) return SCM_UNSPECIFIED;
+	for(i = 1; i <= len; ++i) {
+        SCM arg = read_and_print_expression(lp, err);
+		if (*err) return SCM_UNSPECIFIED;
+        result = scm_cons(arg, result);
+	}
+	return scm_cons(function, result);
+}
+
+static void error( MLINK lp)
+{
+	if (MLError(lp)) {
+		fprintf( stderr, "Error detected by MathLink: %s.\n",
+		MLErrorMessage(lp));
+	}else{
+		fprintf( stderr, "Error detected by this program.\n");
+	}
+}
+
+static void deinit( void)
+{
+	if(ep) MLDeinitialize( ep);
+}
+
+static void closelink( void)
+{
+	if(lp) MLClose(lp);
+}
+
+
+static void init_and_openlink( int argc, char* argv[])
+{
+#if MLINTERFACE >= 3
+	int err;
+#else
+	long err;
+#endif /* MLINTERFACE >= 3 */
+
+  // It's ok to call init_and_openlink multiple times.
+  if (ep !=  (MLENV)0) return;
+
+	ep =  MLInitialize( (MLParametersPointer)0);
+	if( ep == (MLENV)0) exit(1);
+	atexit( deinit);
+
+#if MLINTERFACE < 3
+	lp = MLOpenArgv( ep, argv, argv + argc, &err);
+#else
+	lp = MLOpenArgcArgv( ep, argc, argv, &err);
+#endif
+	if(lp == (MLINK)0) exit(2);
+	atexit( closelink);	
+}
+
+<<Primitive>>
+
+<<Initialize>>
+@ 
+
+We want to add a Scheme primitive that executes a Mathematica command,
+waits for the result and returns.
+
+<<Primitive>>=
+SCM_DEFINE (scm_mathematica_eval, "mathematica-eval", 1, 0, 0,
+            (SCM expression_string),
+            "Evaluate an expression in Mathematica.")
+{
+  int argc = 3;
+  int pkt;
+  int err = 0;
+  char *argv[] = { "mathematica-eval",
+                   "-linkname",
+                   "math -mathlink" };
+
+  SCM result = SCM_BOOL_F;
+  init_and_openlink(argc, argv);
+  
+  MLClearError(lp);
+
+// Apparently, Mathematica does something pretty tricky with MLEvaluate
+// probably to disbar people from having access to it with such a 
+// small amount of C code.  Well, luckily there is a workaround.
+// Kudos again to A MathLink Tutorial by Todd Gayley.
+// 
+// http://mathforum.org/kb/message.jspa?messageID=4782696
+  MLPutFunction(lp, "EvaluatePacket", 1);
+    MLPutFunction(lp, "ToString", 1);
+    //MLPutFunction(lp, "Evaluate", 1);
+        MLPutFunction(lp, "ToExpression", 1);
+          MLPutString(lp, (char *) scm_to_locale_string(expression_string));
+  MLEndPacket(lp);
+
+	/* skip any packets before the first ReturnPacket */
+	while((pkt = MLNextPacket(lp), pkt) && pkt != RETURNPKT) {
+		MLNewPacket(lp);
+		if(MLError(lp)) goto got_error;
+	}
+
+    result = read_and_print_expression(lp, &err);
+    if (err) {
+got_error:
+      scm_throw(C_STRING_TO_SYMBOL("mathematica-eval-error-code"), 
+                scm_list_4(scm_from_int(err),
+                           scm_from_int(MLError(lp)),
+                           scm_from_locale_string(MLErrorMessage(lp)),
+                           result));
+    }
+    
+    return result;
+}
+@ 
+
+<<Initialize>>=
+void init_mathematica(void)
+{
+#ifndef SCM_MAGIC_SNARFER 
+#include "mathematica.c.x" 
+#endif
+}
+
+@
+
+<<file:mathematica.scm>>=
+(define-module (mathematica)
+  #:export (mathematica-eval))
+
+;; This is erroneously reported as a "file not found" error when
+;; there is a symbol missing. Ugh.
+(load-extension "libguile-mathematica" "init_mathematica")
+
+@
+
+<<file:mathematica-test.scm>>=
+(use-modules (srfi srfi-64)
+             (mathematica))
+
+(test-begin "mathematica-eval")
+(test-equal "2" (mathematica-eval "1 + 1"))
+
+(test-end)
+
+(exit (= (test-runner-fail-count (test-runner-current)) 0))
+@ 
+
+
+Let's add a header file so this can be accessed from C.
+
+<<file:mathematica.h>>=
+SCM scm_mathematica_eval(SCM expr);
+@ 

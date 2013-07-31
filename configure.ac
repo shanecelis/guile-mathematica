@@ -42,7 +42,6 @@ GUILE_PROGS
 
 # Checks for libraries.
 PKG_CHECK_MODULES([GUILE], [guile-2.0])
-PKG_CHECK_MODULES([GSL], [gsl])
 
 if test "$prefix" == "/usr/local"; then
    GUILE_SITE_LIB="$(pkg-config guile-2.0 --variable=pkgdatadir)/site";
@@ -74,6 +73,9 @@ dnl AC_SUBST(EMACSY_CFLAGS, ['-I${top_srcdir}/../..'])
 dnl AC_SUBST(EMACSY_LIBS, ['${top_srcdir}/../../libemacsy.a'])
 AC_SUBST(imagesdir, ['${top_srcdir}/support/images'])
 AC_SUBST(automakedir, ['${top_srcdir}/support/automake'])
+
+AC_SUBST(MATHLINK_CFLAGS, ['-I/Applications/Mathematica.app/SystemFiles/Links/MathLink/DeveloperKit/MacOSX-x86-64/MathLinkExamples/../CompilerAdditions'])
+AC_SUBST(MATHLINK_LIBS, ['-L/Applications/Mathematica.app/SystemFiles/Links/MathLink/DeveloperKit/MacOSX-x86-64/MathLinkExamples/../CompilerAdditions -lMLi3 -lstdc++ -framework Foundation'])
 
 # Output files.
 AC_CONFIG_HEADERS([src/config.h])
