@@ -42,7 +42,7 @@ test_links_LDFLAGS = $(GUILE_LIBS)
 test_links_SOURCES = test-links.c
 
 
-guilemoduledir = $(GUILE_SITE_LIB)/$(PACKAGE_TARNAME)
+guilemoduledir = $(GUILE_SITE_LIB)
 dist_guilemodule_DATA = mathematica.scm
 
 #TESTS_ENVIRONMENT = $(GUILE) -L $(top_builddir)/src -L $(top_srcdir)/support/scheme -x $(libdir)
